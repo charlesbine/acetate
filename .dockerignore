@@ -1,0 +1,16 @@
+.git
+.venv
+data/
+*.json
+*.ipynb
+*.zip
+"Spotify Extended Streaming History"
+__pycache__/
+**/__pycache__/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.DS_Store
+.env*
+!.env.example
+.cache

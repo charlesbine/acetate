@@ -1,0 +1,40 @@
+# syntax=docker/dockerfile:1
+# Heavy audio-embedding sidecar for the outside-library candidate frontier.
+#
+# It runs the standalone workers (essentia-tensorflow EffNet + torch/laion-clap
+# CLAP) behind a small stdlib controller. It does NOT install the acetate package:
+# essentia-tensorflow needs Python 3.11 while acetate requires >=3.12, so they
+# can't share an interpreter. Only the Python-3.11-compatible queue/preview
+# modules are copied. The scheduler still owns bulk resolution/finalize/rerank.
+#
+# Model weights (EffNet .pb + the ~2 GB CLAP checkpoint) live in the mounted
+# data/models volume and download once on first run.
+FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1
+
+# ffmpeg: essentia's MonoLoader decodes the 30s MP3 previews through it.
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# CPU torch (not the multi-GB CUDA build), then the audio-ML stack.
+RUN pip install --no-cache-dir torch torchvision torchaudio \
+        --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir essentia-tensorflow laion-clap numpy requests
+
+WORKDIR /app
+# Scripts resolve paths as parent.parent → so /app/scripts/*.py sees DATA=/app/data.
+# Mount the shared data volume at /app/data (compose does this).
+COPY scripts/embed_worker.py scripts/clap_worker.py scripts/embed_loop.py ./scripts/
+COPY scripts/embed_loop.sh /usr/local/bin/embed-loop
+RUN chmod +x /usr/local/bin/embed-loop
+COPY acetate/__init__.py acetate/schema.sql acetate/db.py acetate/canon.py \
+     acetate/audio.py acetate/embedding_requests.py acetate/embedding_guard.py ./acetate/
+
+# EffNet work per pass; CLAP drains a larger work batch through bounded
+# inference microbatches, then exits to release model memory before sleeping.
+ENV EMBED_BATCH=25 \
+    EMBED_CLAP_BATCH=1000 \
+    EMBED_CLAP_MICROBATCH=8 \
+    EMBED_SLEEP=900
+CMD ["embed-loop"]

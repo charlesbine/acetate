@@ -1,0 +1,58 @@
+# acetate — web dashboard + scheduled jobs. Both share one image and the
+# data/ volume (SQLite DB + cached Spotify token). Secrets come from .env.
+services:
+  app:
+    build: .
+    image: acetate:local
+    env_file: .env
+    environment:
+      ACETATE_DB: /data/acetate.db
+      # Container deployments fail closed unless deliberately overridden. Direct
+      # `uvicorn` development runs default to the local admin adapter instead.
+      ACETATE_AUTH_MODE: ${ACETATE_AUTH_MODE:-authelia}
+    volumes:
+      - ./data:/data
+    ports:
+      # bind to localhost only — front it with your existing reverse proxy / tunnel
+      - "127.0.0.1:8765:8765"
+    restart: unless-stopped
+    healthcheck:
+      # stdlib python (no curl in the slim image); runs inside the container so it
+      # never hits the reverse proxy / auth layer.
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/healthz', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  scheduler:
+    image: acetate:local      # reuses the image built by `app`
+    env_file: .env
+    environment:
+      ACETATE_DB: /data/acetate.db
+      ACETATE_POLL_MINUTES: "15"
+    volumes:
+      - ./data:/data
+    command: ["python", "-m", "acetate.scheduler"]
+    restart: unless-stopped
+    depends_on:
+      - app
+
+  # Opt in with: docker compose --profile embeddings up -d --build
+  # Shares the DB, preview cache, model weights, and process-lock files.
+  embed:
+    profiles: [embeddings]
+    build:
+      context: .
+      dockerfile: Dockerfile.embed
+    image: acetate-embed:local
+    environment:
+      ACETATE_DB: /app/data/acetate.db
+      OMP_NUM_THREADS: "2"
+      MKL_NUM_THREADS: "2"
+      TF_NUM_INTRAOP_THREADS: "2"
+      TF_NUM_INTEROP_THREADS: "1"
+    volumes:
+      - ./data:/app/data
+    cpus: "2.0"
+    restart: unless-stopped
